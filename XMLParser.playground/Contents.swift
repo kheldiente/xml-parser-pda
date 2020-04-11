@@ -22,8 +22,8 @@ let sampleInput2 = """
 <?xml version="1.0" encoding="UTF-8" ?>
 """
 let sampleInput3 = """
-<amulet size="medium">
-    <gem>sapphire</gem>
+<amulet size='medium' website="http://www.w3.org/2001/XMLSchema-instance" >
+    < gem   >   sapphire blue  <  /    gem    >
 </amulet>
 """
 let sampleInput4 = """
@@ -39,7 +39,6 @@ let sampleInput6 = """
 <magnitude>-5.53</magnitude>
 """
 let sampleInput7 = """
-<?xml version="1.0" encoding="UTF-8"?>
 <WindowElement xmins="http://windiws.lbl.gov" xsi="http://www.w3.org/2001/XMLSchema-instance" schemaLocation="http://windows.lbl.gov BSDG-v1.4xsd">
 <Optical>
 <Layer>
@@ -107,12 +106,21 @@ extension String.Element {
     }
 
     var isQuotes: Bool {
-        return CharacterSet(charactersIn: "\(self)").isSubset(of: CharacterSet(charactersIn: "\"\""))
+        return CharacterSet(charactersIn: "\(self)").isSubset(of: CharacterSet(charactersIn: "\"\"''"))
     }
 
     var isValueSymbol: Bool {
-        return CharacterSet(charactersIn: "\(self)").isSubset(of: CharacterSet(charactersIn: "_?*,#"))
+        return CharacterSet(charactersIn: "\(self)").isSubset(of: CharacterSet(charactersIn: ".:-/_?*,#"))
     }
+    
+    var isAttrib: Bool {
+        return self.isLetter || self.isNumber
+    }
+    
+    var isTag: Bool {
+        return self.isLetter || self.isNumber
+    }
+    
 }
 
 
@@ -126,49 +134,81 @@ func getXmlTokens(xmlString: String) -> [Token] {
         for (index, character) in formattedLineString.enumerated() {
             let isXmlSymbol = character.isXmlSymbol
             let isQuotes = character.isQuotes
+            let isAttrib = character.isAttrib
+            let isTag = character.isTag
             let isValueSymbol = character.isValueSymbol
-            let isLetter = character.isLetter
-            let isNumber = character.isNumber
+            let isWhiteSpace = character.isWhitespace
             var type: TokenType = .undefined
             
-            if !isLetter && !isQuotes && !isNumber && !isValueSymbol {
+            if isXmlSymbol || isWhiteSpace {
                 if !tempString.isEmpty {
-                    let lastToken = tokens.last
+                    let lastTokenType = tokens.last?.type ?? .undefined
                     
-                    switch lastToken?.type {
+                    switch lastTokenType {
                     case .lessThanSymbol:
                         type = .tag
-                    case .tag:
+                    case .greaterThanSymbol:
+                        type = .value
+                    case .tag, .attribValue:
                         type = .attrib
                     case .oper:
                         type = .attribValue
                     case .slash:
                         type = .tag
+                    case .value:
+                        type = .value
                     default:
                         type = .undefined
                     }
                     
-                    tokens.append(Token(value: tempString, type: type))
-                    tempString = ""
+                    if type == .attribValue {
+                        let inQuotes = (tempString.first == "\"" && tempString.last == "\"") || (tempString.first == "'" && tempString.last == "'")
+                        if inQuotes { // Attrib value should be in quotes
+                            tokens.append(Token(value: tempString, type: type))
+                            tempString = ""
+                        }
+                    } else if type == .value {
+                        if lastTokenType == .greaterThanSymbol {
+                            if isWhiteSpace {
+                                tempString += String(character)
+                            } else {
+                                tokens.append(Token(value: tempString, type: type))
+                                tempString = ""
+                            }
+                        }
+                    } else {
+                        let trimmedValue = tempString.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+                        if !trimmedValue.isEmpty {
+                            tokens.append(Token(value: trimmedValue, type: type))
+                            tempString = ""
+                        }
+                    }
                 }
             }
             
             if isXmlSymbol {
-                if character == "<" {
-                    type = .lessThanSymbol
-                } else if character == ">" {
-                    type = .greaterThanSymbol
-                } else if character == "/" {
-                    type = .slash
-                } else if character == "?" {
-                    type = .questionMark
-                } else if character == "=" {
-                    type = .oper
+                let lastTokenType = tokens.last?.type ?? .undefined
+                // print("lastToken: \(lastTokenType), character: \(character), tempString: \(tempString)")
+                if lastTokenType != .oper {
+                    if character == "<" {
+                        type = .lessThanSymbol
+                    } else if character == ">" {
+                        type = .greaterThanSymbol
+                    } else if character == "/" {
+                        type = .slash
+                    } else if character == "?" {
+                        type = .questionMark
+                    } else if character == "=" {
+                        type = .oper
+                    }
+                    tokens.append(Token(value: String(character), type: type))
+                } else {
+                    tempString += String(character)
+                    
                 }
-                
-                tokens.append(Token(value: String(character), type: type))
             } else {
-                if isLetter || isQuotes || isNumber || isValueSymbol {
+                if isTag || isAttrib || isQuotes || isValueSymbol || isWhiteSpace {
+                    // print("character: \(character)")
                     tempString += String(character)
                 }
             }
@@ -187,8 +227,8 @@ func isXmlFileValid(xmlString: String) {
     stack[top] = Token(value: "", type: .empty)
     
     for token in tokens {
-        // print("token: \(token.value): \(token.type)")
-        print("stack: \(stack[0...top].map { $0.value }), top: \(top)")
+        print("token: \(token.value) ---- \(token.type)")
+        // print("stack: \(stack[0...top].map { $0.value }), top: \(top)")
         
         if stack[top].type == .lessThanSymbol {
             if token.type == .tag || token.type == .slash {
@@ -212,13 +252,15 @@ func isXmlFileValid(xmlString: String) {
                     top += 1
                     stack[top] = token
                 }
+            } else if token.type == .attrib {
+                top += 1
+                stack[top] = token
             }
         } else if stack[top].type == .slash {
             if token.type == .tag {
                 stack[top] = Token(value: "", type: .undefined)
                 top -= 1
                 
-                print("slash -> stack: \(stack[top].value), token: \(token.value)")
                 if stack[top].value == token.value {
                     stack[top] = Token(value: "", type: .undefined)
                     top -= 1
@@ -230,6 +272,15 @@ func isXmlFileValid(xmlString: String) {
         } else if stack[top].type == .greaterThanSymbol {
             if token.type == .lessThanSymbol {
                 stack[top] = token
+            }
+        } else if stack[top].type == .attrib {
+            if token.type == .oper {
+                stack[top] = token
+            }
+        } else if stack[top].type == .oper {
+            if token.type == .attribValue {
+                stack[top] = Token(value: "", type: .undefined)
+                top -= 1
             }
         } else {
             if token.type == .greaterThanSymbol {
@@ -244,7 +295,7 @@ func isXmlFileValid(xmlString: String) {
         }
     }
     
-    print("stack: \(stack[0...top].map { $0.type }), top: \(top)")
+    print("stack: \(stack[0...top].map { $0.value }), top: \(top)")
     if stack[top].type == .empty {
         stack[top] = Token(value: "", type: .undefined)
         top -= 1
